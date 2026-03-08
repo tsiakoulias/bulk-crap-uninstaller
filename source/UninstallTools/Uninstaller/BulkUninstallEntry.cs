@@ -431,6 +431,10 @@ namespace UninstallTools.Uninstaller
                     var prevWatchedPidSet = new HashSet<int>();
                     var noReadingsCounter = 0;
 
+                    // Reset instance-level stall state for this attempt (survives retries otherwise)
+                    _partialReadingTicks = 0;
+                    _perfCounterBuffer.Clear();
+
                     while (true)
                     {
                         if (_skipLevel == SkipCurrentLevel.Skip)
