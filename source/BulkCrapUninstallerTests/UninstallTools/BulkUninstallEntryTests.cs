@@ -320,6 +320,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             var result = default(BulkUninstallEntry.StallTestResult);
 
             Assert.IsFalse(result.HasReadings, "Default should have no readings");
+            Assert.IsFalse(result.HasRawReadings, "Default should have no raw readings");
             Assert.IsFalse(result.IsIdle);
             Assert.IsFalse(result.IsIoIdle);
             Assert.AreEqual(0f, result.AggregateCpu);
@@ -332,6 +333,20 @@ namespace BulkCrapUninstallerTests.UninstallTools
             var result = BulkUninstallEntry.EvaluateCounterReadings(new (float, float)[] { (5f, 1000f) });
 
             Assert.IsTrue(result.HasReadings, "Result from actual readings should have HasReadings=true");
+            Assert.IsTrue(result.HasRawReadings, "Result from actual readings should have HasRawReadings=true");
+        }
+
+        [TestMethod]
+        public void StallTestResult_GracePeriod_HasRawReadingsButNotHasReadings()
+        {
+            var result = new BulkUninstallEntry.StallTestResult(hasRawReadings: true);
+
+            Assert.IsFalse(result.HasReadings, "Grace period result should not have usable readings");
+            Assert.IsTrue(result.HasRawReadings, "Grace period result should indicate raw data exists");
+            Assert.IsFalse(result.IsIdle);
+            Assert.IsFalse(result.IsIoIdle);
+            Assert.AreEqual(0f, result.AggregateCpu);
+            Assert.AreEqual(0f, result.AggregateIo);
         }
 
         #endregion
@@ -385,7 +400,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                     {
                         partialReadingTicks++;
                         stallResult = partialReadingTicks <= BulkUninstallEntry.PartialReadingGraceTicks
-                            ? default
+                            ? new BulkUninstallEntry.StallTestResult(hasRawReadings: true)
                             : BulkUninstallEntry.EvaluateCounterReadings(readings);
                     }
                 }
@@ -395,7 +410,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                     stallResult = BulkUninstallEntry.EvaluateCounterReadings(readings);
                 }
 
-                if (stallResult.HasReadings)
+                if (stallResult.HasRawReadings)
                     noReadingsCounter = 0;
                 else
                     noReadingsCounter++;
@@ -655,6 +670,29 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
             Assert.AreEqual(0, noReadings,
                 "noReadingsCounter should reset to 0 when valid readings appear");
+        }
+
+        [TestMethod]
+        public void CounterReset_PartialReadingsGrace_DoesNotIncrementNoReadingsCounter()
+        {
+            // Regression test: PID churn resets partial-reading grace each cycle, and
+            // every grace tick previously incremented noReadingsCounter (HasReadings=false).
+            // With enough churn cycles, noReadingsCounter could exceed NoReadingsThreshold
+            // and wrongly kill the process even though raw data IS being produced.
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+
+            // 35 churn cycles × PartialReadingGraceTicks(10) = 350 ticks > NoReadingsThreshold(300)
+            for (int cycle = 0; cycle < 35; cycle++)
+            {
+                var pids = new HashSet<int> { 100, 200 + cycle }; // PID churn each cycle
+                for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                    ticks.Add((pids, new[] { (10f, 5000f) })); // 1 reading for 2 PIDs = partial
+            }
+
+            SimulateStallLoop(ticks, out _, out _, out _, out var noReadings);
+
+            Assert.AreEqual(0, noReadings,
+                "noReadingsCounter must not accumulate during partial-reading grace when raw data exists");
         }
 
         #endregion

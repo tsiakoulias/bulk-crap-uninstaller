@@ -322,7 +322,7 @@ namespace UninstallTools.Uninstaller
 
                 _partialReadingTicks++;
                 if (_partialReadingTicks <= PartialReadingGraceTicks)
-                    return default;
+                    return new StallTestResult(hasRawReadings: true);
             }
             else
             {
@@ -503,7 +503,7 @@ namespace UninstallTools.Uninstaller
 
                             var stallResult = TestUninstallerForStalls(watchedProcesses);
 
-                            if (stallResult.HasReadings)
+                            if (stallResult.HasRawReadings)
                                 noReadingsCounter = 0;
                             else
                                 noReadingsCounter++;
@@ -834,8 +834,12 @@ namespace UninstallTools.Uninstaller
 
         internal readonly struct StallTestResult
         {
-            /// <summary>True when at least one process produced counter readings.</summary>
+            /// <summary>True when at least one process produced usable counter readings.</summary>
             public bool HasReadings { get; }
+            /// <summary>True when at least one process produced counter data, even if
+            /// suppressed by the partial-reading grace period. Used to prevent the
+            /// no-readings safety net from firing when raw data does exist.</summary>
+            public bool HasRawReadings { get; }
             /// <summary>Both CPU and I/O are below thresholds for all monitored processes.</summary>
             public bool IsIdle { get; }
             /// <summary>I/O is below threshold for all monitored processes (CPU may be active).</summary>
@@ -848,10 +852,18 @@ namespace UninstallTools.Uninstaller
             public StallTestResult(bool isIdle, bool isIoIdle, float aggregateCpu, float aggregateIo)
             {
                 HasReadings = true;
+                HasRawReadings = true;
                 IsIdle = isIdle;
                 IsIoIdle = isIoIdle;
                 AggregateCpu = aggregateCpu;
                 AggregateIo = aggregateIo;
+            }
+
+            /// <summary>Creates a result with no usable readings but indicates raw counter
+            /// data existed (e.g. partial readings suppressed by grace period).</summary>
+            internal StallTestResult(bool hasRawReadings)
+            {
+                HasRawReadings = hasRawReadings;
             }
         }
 
