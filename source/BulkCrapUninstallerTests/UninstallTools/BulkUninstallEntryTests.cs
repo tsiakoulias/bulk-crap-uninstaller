@@ -383,7 +383,6 @@ namespace BulkCrapUninstallerTests.UninstallTools
             {
                 if (!pids.SetEquals(prevWatchedPidSet))
                 {
-                    partialReadingTicks = 0;
                     prevWatchedPidSet = new HashSet<int>(pids);
                 }
 
@@ -631,9 +630,8 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
             SimulateStallLoop(ticks, out var idle, out _, out _);
 
-            // Only the 1 full-reading tick should have advanced the counter.
-            // After PID-set-change reset (not applicable here, same PIDs), the full tick
-            // contributes 1. Grace period ticks before and after contribute 0.
+            // The full-reading tick IS idle (0.5% CPU, 100B I/O) so idleCounter → 1.
+            // But the subsequent grace ticks return IsIdle=false, resetting it to 0.
             Assert.AreEqual(0, idle,
                 "Grace period must reset on full reading; subsequent partial ticks should not advance counters");
         }
@@ -675,10 +673,8 @@ namespace BulkCrapUninstallerTests.UninstallTools
         [TestMethod]
         public void CounterReset_PartialReadingsGrace_DoesNotIncrementNoReadingsCounter()
         {
-            // Regression test: PID churn resets partial-reading grace each cycle, and
-            // every grace tick previously incremented noReadingsCounter (HasReadings=false).
-            // With enough churn cycles, noReadingsCounter could exceed NoReadingsThreshold
-            // and wrongly kill the process even though raw data IS being produced.
+            // Regression test: PID churn with partial readings must not accumulate
+            // noReadingsCounter, since raw data IS being produced (HasRawReadings=true).
             var ticks = new List<(HashSet<int>, (float, float)[])>();
 
             // 35 churn cycles × PartialReadingGraceTicks(10) = 350 ticks > NoReadingsThreshold(300)
@@ -693,6 +689,32 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
             Assert.AreEqual(0, noReadings,
                 "noReadingsCounter must not accumulate during partial-reading grace when raw data exists");
+        }
+
+        [TestMethod]
+        public void CounterReset_PidChurn_WithPartialReadings_CountersAdvanceAfterInitialGrace()
+        {
+            // Regression test: PID churn with persistent partial readings must NOT keep
+            // the grace period active forever. The grace is a one-time startup window;
+            // after it expires, partial readings feed into EvaluateCounterReadings so
+            // stall counters can advance. Without this fix, resetting _partialReadingTicks
+            // on every PID change would suppress all stall detection indefinitely.
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+
+            // 5 churn cycles × 10 ticks = 50 total. All readings are idle + partial.
+            for (int cycle = 0; cycle < 5; cycle++)
+            {
+                var pids = new HashSet<int> { 100, 200 + cycle };
+                for (int i = 0; i < 10; i++)
+                    ticks.Add((pids, new[] { (0.5f, 100f) })); // 1 idle reading for 2 PIDs
+            }
+
+            SimulateStallLoop(ticks, out var idle, out _, out _);
+
+            // First 10 ticks: grace active → IsIdle=false on grace result → idleCounter=0.
+            // Ticks 10–49 (40 ticks): grace expired → EvaluateCounterReadings → IsIdle=true.
+            Assert.AreEqual(40, idle,
+                "idleCounter must advance after initial grace period despite ongoing PID churn with partial readings");
         }
 
         #endregion

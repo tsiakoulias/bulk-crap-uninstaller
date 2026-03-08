@@ -490,14 +490,16 @@ namespace UninstallTools.Uninstaller
 
                             if (!currentPidSet.SetEquals(prevWatchedPidSet))
                             {
-                                // Reset partial-reading grace so new PIDs get the full window
-                                // for counter resolution. Stall counters and prev-aggregate
-                                // values are NOT reset — counters naturally reset through
+                                // Track the new PID set but do NOT reset _partialReadingTicks:
+                                // the grace period is a one-time startup window. Resetting it
+                                // on every PID change would let recurring child-process churn
+                                // keep grace active forever, preventing all stall counters
+                                // from advancing. Stall counters and prev-aggregate values are
+                                // also preserved — counters naturally reset through
                                 // else-branches when conditions don't hold, and keeping prev
                                 // aggregates lets relative-change detectors (I/O-idle,
                                 // steady-state) continue across child-process churn when
                                 // aggregate values stay similar.
-                                _partialReadingTicks = 0;
                                 prevWatchedPidSet = currentPidSet;
                             }
 
