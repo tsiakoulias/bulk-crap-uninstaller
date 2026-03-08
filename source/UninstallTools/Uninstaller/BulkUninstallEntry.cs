@@ -41,9 +41,37 @@ namespace UninstallTools.Uninstaller
                 }
             }).Where(x => !string.IsNullOrEmpty(x)).Concat(new[] { "explorer" }).Distinct().ToArray();
 
+        // Number of consecutive idle checks (both CPU and I/O low) before killing the process.
+        // Kill fires on tick threshold+1 due to > comparison (~34s at ~1.1s/tick).
+        internal const int FullIdleThreshold = 30;
+        // Number of consecutive I/O-idle checks before killing, even if CPU is active.
+        // Catches processes stuck showing a dialog that spin the CPU but perform no I/O (issue #579).
+        // Kill fires on tick threshold+1 (~2.2min).
+        internal const int IoIdleThreshold = 120;
+        // Number of consecutive steady-state checks before killing.
+        // Catches processes in a busy loop with consistent, low-level activity (e.g., polling for a file).
+        // Kill fires on tick threshold+1 (~5.5min).
+        internal const int SteadyStateThreshold = 300;
+        // CPU variation tolerance for steady-state detection (±5 percentage points across all processes)
+        internal const float SteadyCpuTolerance = 5f;
+        // I/O variation tolerance for steady-state detection (±20KB/s)
+        internal const float SteadyIoTolerance = 20480f;
+        // Maximum aggregate I/O rate for steady-state stall detection (512KB/s).
+        // Above this, the process is likely doing real work even if values are stable.
+        internal const float SteadyIoMaxForStall = 524288f;
+        // Number of consecutive partial-reading ticks to tolerate before using available readings.
+        // Gives counter resolution time to catch up with newly spawned processes (~11s).
+        internal const int PartialReadingGraceTicks = 10;
+        // Number of consecutive ticks with zero counter readings before killing.
+        // Acts as a safety net when performance counter resolution completely fails,
+        // preventing a stuck process from running indefinitely unmonitored.
+        // Kill fires on tick threshold+1 (~5.5min).
+        internal const int NoReadingsThreshold = 300;
+
         private readonly object _operationLock = new();
 
-        private readonly Dictionary<string, PerfCounterEntry> _perfCounterBuffer = new();
+        private readonly Dictionary<int, PerfCounterEntry> _perfCounterBuffer = new();
+        private int _partialReadingTicks;
 
         private bool _canRetry = true;
         private SkipCurrentLevel _skipLevel = SkipCurrentLevel.None;
@@ -200,42 +228,58 @@ namespace UninstallTools.Uninstaller
         }
 
         /// <summary>
-        ///     Returns true if uninstaller appears to be stalled. Blocks for 1000ms to gather data.
+        ///     Tests whether uninstaller processes appear stalled. Blocks for ~1100ms to gather data.
         /// </summary>
-        private bool TestUninstallerForStalls(IEnumerable<string> childProcesses)
+        private StallTestResult TestUninstallerForStalls(IEnumerable<Process> childProcesses)
         {
-            var childProcessNames = childProcesses as IList<string> ?? childProcesses.ToList();
+            var processList = childProcesses as IList<Process> ?? childProcesses.ToList();
 
+            // Determine which PIDs need new counter instances
+            var watchedPids = new HashSet<int>();
+            foreach (var p in processList)
+            {
+                var pid = SafeGetProcessId(p);
+                if (pid > 0) watchedPids.Add(pid);
+            }
+
+            // Remove counters for processes no longer being watched
             foreach (var perfCounterEntry in _perfCounterBuffer.ToList())
             {
-                if (!childProcessNames.Contains(perfCounterEntry.Key))
+                if (!watchedPids.Contains(perfCounterEntry.Key))
                 {
                     _perfCounterBuffer.Remove(perfCounterEntry.Key);
                     perfCounterEntry.Value.Dispose();
                 }
             }
 
-            foreach (var childProcessName in childProcessNames)
+            // Only perform the expensive category scan if there are new PIDs not yet in the buffer
+            var newPids = watchedPids.Where(pid => !_perfCounterBuffer.ContainsKey(pid)).ToList();
+            if (newPids.Count > 0)
             {
-                PerformanceCounter[] perfCounters = null;
-                try
+                var counterTargets = GetPerformanceCounterTargets(processList).ToList();
+                foreach (var counterTarget in counterTargets)
                 {
-                    perfCounters = new[]
+                    if (_perfCounterBuffer.ContainsKey(counterTarget.ProcessId))
+                        continue;
+
+                    PerformanceCounter[] perfCounters = null;
+                    try
                     {
-                        new PerformanceCounter("Process", "% Processor Time", childProcessName, true),
-                        new PerformanceCounter("Process", "IO Data Bytes/sec", childProcessName, true)
-                    };
-                    // Important to NextSample now, they will collect data when we sleep
-                    _perfCounterBuffer.Add(childProcessName, new PerfCounterEntry(
-                        perfCounters, new[] { perfCounters[0].NextSample(), perfCounters[1].NextSample() }));
-                }
-                catch
-                {
-                    // Ignore errors caused by counters derping
-                    if (perfCounters != null && perfCounters.Length == 2)
+                        perfCounters = new[]
+                        {
+                            new PerformanceCounter("Process", "% Processor Time", counterTarget.CounterInstanceName, true),
+                            new PerformanceCounter("Process", "IO Data Bytes/sec", counterTarget.CounterInstanceName, true)
+                        };
+                        _perfCounterBuffer.Add(counterTarget.ProcessId, new PerfCounterEntry(
+                            perfCounters, new[] { perfCounters[0].NextSample(), perfCounters[1].NextSample() }));
+                    }
+                    catch
                     {
-                        perfCounters[0].Dispose();
-                        perfCounters[1].Dispose();
+                        if (perfCounters != null && perfCounters.Length == 2)
+                        {
+                            perfCounters[0].Dispose();
+                            perfCounters[1].Dispose();
+                        }
                     }
                 }
             }
@@ -243,7 +287,7 @@ namespace UninstallTools.Uninstaller
             // Let the counters gather some data
             Thread.Sleep(1100);
 
-            bool? anyWorking = null;
+            var readings = new List<(float Cpu, float Io)>();
 
             foreach (var perfCounterEntry in _perfCounterBuffer.ToList())
             {
@@ -258,16 +302,7 @@ namespace UninstallTools.Uninstaller
 
                     Debug.WriteLine("CPU " + c0 + "%, IO " + c1 + "B");
 
-                    // Check if process seems to be doing anything. Use 1% for CPU and 10KB for I/O
-                    if (c0 <= 1 && c1 <= 10240)
-                    {
-                        anyWorking = false;
-                    }
-                    else
-                    {
-                        anyWorking = true;
-                        break;
-                    }
+                    readings.Add((c0, c1));
                 }
                 catch
                 {
@@ -276,8 +311,82 @@ namespace UninstallTools.Uninstaller
                 }
             }
 
-            // Only return true if we had at least one process to test and it tested negatively
-            return anyWorking.HasValue && !anyWorking.Value;
+            // Grace period for partial readings: tolerate missing PIDs briefly
+            // (counter resolution can lag behind process creation), but after the
+            // grace period, use available readings to avoid suppressing stall
+            // detection indefinitely when a PID is persistently unreadable.
+            if (readings.Count < watchedPids.Count)
+            {
+                if (readings.Count == 0)
+                    return default;
+
+                _partialReadingTicks++;
+                if (_partialReadingTicks <= PartialReadingGraceTicks)
+                    return default;
+            }
+            else
+            {
+                _partialReadingTicks = 0;
+            }
+
+            return EvaluateCounterReadings(readings);
+        }
+
+        /// <summary>
+        /// Evaluates per-process CPU/I/O readings to determine idle, I/O-idle, and aggregate states.
+        /// </summary>
+        internal static StallTestResult EvaluateCounterReadings(IReadOnlyList<(float Cpu, float Io)> readings)
+        {
+            if (readings.Count == 0)
+                return default;
+
+            var anyWorking = false;
+            var allIoIdle = true;
+            var totalCpu = 0f;
+            var totalIo = 0f;
+
+            foreach (var (cpu, io) in readings)
+            {
+                totalCpu += cpu;
+                totalIo += io;
+
+                if (io > 10240)
+                    allIoIdle = false;
+
+                if (cpu > 1 || io > 10240)
+                    anyWorking = true;
+            }
+
+            return new StallTestResult(
+                isIdle: !anyWorking,
+                isIoIdle: allIoIdle,
+                aggregateCpu: totalCpu,
+                aggregateIo: totalIo);
+        }
+
+        /// <summary>
+        /// Determines if aggregate CPU is roughly stable compared to the previous reading.
+        /// Used to gate the I/O-idle path so that legitimately CPU-heavy (but I/O-quiet) work is not killed.
+        /// </summary>
+        internal static bool IsCpuStable(float prevCpu, float currentCpu)
+        {
+            if (prevCpu < 0)
+                return false; // no valid previous reading
+
+            return Math.Abs(currentCpu - prevCpu) <= SteadyCpuTolerance;
+        }
+
+        /// <summary>
+        /// Determines if aggregate counter readings indicate a steady state (values not changing significantly).
+        /// </summary>
+        internal static bool IsSteadyState(float prevCpu, float prevIo, float currentCpu, float currentIo)
+        {
+            if (prevCpu < 0)
+                return false; // no valid previous reading
+
+            return Math.Abs(currentCpu - prevCpu) <= SteadyCpuTolerance &&
+                   Math.Abs(currentIo - prevIo) <= SteadyIoTolerance &&
+                   currentIo < SteadyIoMaxForStall;
         }
 
         private void UninstallThread(object parameters)
@@ -315,6 +424,12 @@ namespace UninstallTools.Uninstaller
                     int[] previousWatchedProcessIds = { };
 
                     var idleCounter = 0;
+                    var ioIdleCounter = 0;
+                    var steadyStateCounter = 0;
+                    var prevAggregateCpu = -1f;
+                    var prevAggregateIo = -1f;
+                    var prevWatchedPidSet = new HashSet<int>();
+                    var noReadingsCounter = 0;
 
                     while (true)
                     {
@@ -362,18 +477,76 @@ namespace UninstallTools.Uninstaller
                         }
 
                         // Check for deadlocks during silent uninstall. Prevents the task from getting stuck 
-                        // idefinitely on stuck uninstallers and unrelated processes spawned by uninstallers.
+                        // indefinitely on stuck uninstallers and unrelated processes spawned by uninstallers.
                         if (checkCounters)
                         {
-                            var processNames = SafeGetProcessNames(watchedProcesses);
+                            // Reset history-dependent counters when the watched process set changes,
+                            // so that aggregate-based detectors don't carry stale state across PID turnover.
+                            var currentPidSet = new HashSet<int>(watchedProcesses.Select(p =>
+                            {
+                                try { return p.Id; } catch { return -1; }
+                            }));
+                            currentPidSet.Remove(-1);
 
-                            if (TestUninstallerForStalls(processNames))
+                            if (!currentPidSet.SetEquals(prevWatchedPidSet))
+                            {
+                                // Reset partial-reading grace so new PIDs get the full window
+                                // for counter resolution. Stall counters and prev-aggregate
+                                // values are NOT reset — counters naturally reset through
+                                // else-branches when conditions don't hold, and keeping prev
+                                // aggregates lets relative-change detectors (I/O-idle,
+                                // steady-state) continue across child-process churn when
+                                // aggregate values stay similar.
+                                _partialReadingTicks = 0;
+                                prevWatchedPidSet = currentPidSet;
+                            }
+
+                            var stallResult = TestUninstallerForStalls(watchedProcesses);
+
+                            if (stallResult.HasReadings)
+                                noReadingsCounter = 0;
+                            else
+                                noReadingsCounter++;
+
+                            if (stallResult.IsIdle)
                                 idleCounter++;
                             else
                                 idleCounter = 0;
 
+                            // I/O-idle path requires CPU stability to avoid killing legitimately
+                            // CPU-heavy uninstallers that simply perform little I/O.
+                            // Resets on ANY tick where the full condition is not met, preventing
+                            // non-consecutive stable-CPU samples from accumulating.
+                            if (stallResult.IsIoIdle && stallResult.HasReadings
+                                                     && IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
+                                ioIdleCounter++;
+                            else
+                                ioIdleCounter = 0;
+
+                            if (stallResult.HasReadings)
+                            {
+                                if (IsSteadyState(prevAggregateCpu, prevAggregateIo,
+                                        stallResult.AggregateCpu, stallResult.AggregateIo))
+                                    steadyStateCounter++;
+                                else
+                                    steadyStateCounter = 0;
+
+                                prevAggregateCpu = stallResult.AggregateCpu;
+                                prevAggregateIo = stallResult.AggregateIo;
+                            }
+                            else
+                            {
+                                // No readings available — break any consecutive steady-state streak
+                                // and invalidate previous aggregates so the next reading starts fresh.
+                                steadyStateCounter = 0;
+                                prevAggregateCpu = -1f;
+                                prevAggregateIo = -1f;
+                            }
+
                             // Kill the uninstaller (and children) if they were idle/stalled for too long
-                            if (idleCounter > 30)
+                            if (idleCounter > FullIdleThreshold || ioIdleCounter > IoIdleThreshold
+                                                                || steadyStateCounter > SteadyStateThreshold
+                                                                || noReadingsCounter > NoReadingsThreshold)
                             {
                                 KillProcesses(watchedProcesses);
                                 throw new IOException(Localisation.UninstallError_UninstallerTimedOut);
@@ -502,20 +675,67 @@ namespace UninstallTools.Uninstaller
             }
         }
 
-        private static IEnumerable<string> SafeGetProcessNames(IEnumerable<Process> processes)
+        internal static IEnumerable<ProcessCounterTarget> GetPerformanceCounterTargets(IEnumerable<Process> processes)
         {
-            return processes.Select(x =>
+            var remainingIds = processes.Select(SafeGetProcessId)
+                .Where(x => x > 0)
+                .ToHashSet();
+
+            if (remainingIds.Count == 0)
+                return Enumerable.Empty<ProcessCounterTarget>();
+
+            var results = new List<ProcessCounterTarget>();
+
+            string[] instanceNames;
+            try
             {
-                try
+                instanceNames = new PerformanceCounterCategory("Process").GetInstanceNames();
+            }
+            catch
+            {
+                return results;
+            }
+
+            foreach (var instanceName in instanceNames)
+            {
+                var processId = TryGetProcessIdFromCounterInstance(instanceName);
+                if (!processId.HasValue || !remainingIds.Remove(processId.Value))
+                    continue;
+
+                results.Add(new ProcessCounterTarget(processId.Value, instanceName));
+                if (remainingIds.Count == 0)
+                    break;
+            }
+
+            return results;
+        }
+
+        private static int SafeGetProcessId(Process process)
+        {
+            try
+            {
+                return process.Id;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private static int? TryGetProcessIdFromCounterInstance(string instanceName)
+        {
+            try
+            {
+                using (var counter = new PerformanceCounter("Process", "ID Process", instanceName, true))
                 {
-                    return x.ProcessName;
+                    var rawValue = counter.RawValue;
+                    return rawValue > 0 ? (int)rawValue : null;
                 }
-                catch
-                {
-                    // Ignore errors caused by processes that exited
-                    return null;
-                }
-            }).Where(x => !string.IsNullOrEmpty(x));
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static IEnumerable<int> SafeGetProcessIds(IEnumerable<Process> processes)
@@ -610,6 +830,42 @@ namespace UninstallTools.Uninstaller
                     performanceCounter?.Dispose();
                 }
             }
+        }
+
+        internal readonly struct StallTestResult
+        {
+            /// <summary>True when at least one process produced counter readings.</summary>
+            public bool HasReadings { get; }
+            /// <summary>Both CPU and I/O are below thresholds for all monitored processes.</summary>
+            public bool IsIdle { get; }
+            /// <summary>I/O is below threshold for all monitored processes (CPU may be active).</summary>
+            public bool IsIoIdle { get; }
+            /// <summary>Sum of CPU usage across all monitored processes.</summary>
+            public float AggregateCpu { get; }
+            /// <summary>Sum of I/O rates across all monitored processes.</summary>
+            public float AggregateIo { get; }
+
+            public StallTestResult(bool isIdle, bool isIoIdle, float aggregateCpu, float aggregateIo)
+            {
+                HasReadings = true;
+                IsIdle = isIdle;
+                IsIoIdle = isIoIdle;
+                AggregateCpu = aggregateCpu;
+                AggregateIo = aggregateIo;
+            }
+        }
+
+        internal sealed class ProcessCounterTarget
+        {
+            public ProcessCounterTarget(int processId, string counterInstanceName)
+            {
+                ProcessId = processId;
+                CounterInstanceName = counterInstanceName;
+            }
+
+            public int ProcessId { get; }
+
+            public string CounterInstanceName { get; }
         }
 
         internal sealed class RunUninstallerOptions
