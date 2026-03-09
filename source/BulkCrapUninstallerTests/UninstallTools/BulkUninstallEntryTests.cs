@@ -15,7 +15,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         // This is an integration test. It spawns two real sleep processes
         // (via StartSleepProcess helper) and reads Windows performance counters,
-        // with an estimated time impact of ~9sec total.
+        // with an estimated time impact of ~10sec total.
         [TestCategory("StallDetection")]
         [TestMethod]
         public void GetPerformanceCounterTargets_ResolvesDistinctCounterInstancesForDuplicateProcessNames()
