@@ -13,6 +13,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
     {
         #region GetPerformanceCounterTargets
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void GetPerformanceCounterTargets_ResolvesDistinctCounterInstancesForDuplicateProcessNames()
         {
@@ -43,6 +44,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         #region EvaluateCounterReadings
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_NoReadings_ReturnsDefault()
         {
@@ -55,6 +57,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.AreEqual(0f, result.AggregateIo);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_NoReadings_DoesNotTriggerSteadyState()
         {
@@ -69,6 +72,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "IsSteadyState itself returns true for 0/0 — the guard must be on HasReadings");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_AllIdle_ReturnsIdleAndIoIdle()
         {
@@ -82,6 +86,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.AreEqual(11240f, result.AggregateIo, 0.001f);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_HighCpuZeroIo_NotIdleButIoIdle()
         {
@@ -95,6 +100,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.AreEqual(0f, result.AggregateIo, 0.001f);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_HighCpuHighIo_NotIdleNotIoIdle()
         {
@@ -106,6 +112,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsFalse(result.IsIoIdle);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_MixedProcesses_AnyWorkingMeansNotIdle()
         {
@@ -119,6 +126,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.AreEqual(50100f, result.AggregateIo, 0.001f);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_HighCpuLowIo_MultipleProcesses_IoIdleButNotIdle()
         {
@@ -130,6 +138,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(result.IsIoIdle, "All I/O ≤ 10240 → I/O idle");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_OneProcessIoIdleOneNot_NotIoIdle()
         {
@@ -140,6 +149,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsFalse(result.IsIoIdle, "One process with I/O > 10240 → not I/O idle");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_BoundaryValues_CpuExactly1_IoExactly10240_IsIdle()
         {
@@ -151,6 +161,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(result.IsIoIdle, "I/O = 10240 → at boundary, should be I/O idle");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_BoundaryValues_CpuSlightlyAbove1_NotIdle()
         {
@@ -161,6 +172,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(result.IsIoIdle, "I/O = 0 → I/O idle");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void EvaluateCounterReadings_BoundaryValues_IoSlightlyAbove10240_NotIoIdle()
         {
@@ -175,30 +187,35 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         #region IsCpuStable
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_NoPreviousReading_ReturnsFalse()
         {
             Assert.IsFalse(BulkUninstallEntry.IsCpuStable(-1f, 10f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_IdenticalValues_ReturnsTrue()
         {
             Assert.IsTrue(BulkUninstallEntry.IsCpuStable(10f, 10f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_WithinTolerance_ReturnsTrue()
         {
             Assert.IsTrue(BulkUninstallEntry.IsCpuStable(10f, 15f)); // exactly at ±5
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_ExceedsTolerance_ReturnsFalse()
         {
             Assert.IsFalse(BulkUninstallEntry.IsCpuStable(10f, 16f)); // 6 > 5
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_Issue579Scenario_StuckDialogIsStable()
         {
@@ -206,6 +223,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(BulkUninstallEntry.IsCpuStable(10f, 12f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsCpuStable_LegitWorkload_VaryingCpuIsUnstable()
         {
@@ -217,18 +235,21 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         #region IsSteadyState
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_NoPreviousReading_ReturnsFalse()
         {
             Assert.IsFalse(BulkUninstallEntry.IsSteadyState(-1f, 0f, 10f, 5000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_IdenticalValues_ReturnsTrue()
         {
             Assert.IsTrue(BulkUninstallEntry.IsSteadyState(10f, 5000f, 10f, 5000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_ValuesWithinTolerance_ReturnsTrue()
         {
@@ -236,6 +257,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(BulkUninstallEntry.IsSteadyState(10f, 50000f, 14f, 60000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_CpuExceedsTolerance_ReturnsFalse()
         {
@@ -243,6 +265,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsFalse(BulkUninstallEntry.IsSteadyState(10f, 5000f, 16f, 5000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_IoExceedsTolerance_ReturnsFalse()
         {
@@ -250,6 +273,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsFalse(BulkUninstallEntry.IsSteadyState(10f, 50000f, 10f, 80000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_IoAboveMaxThreshold_ReturnsFalse()
         {
@@ -257,6 +281,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsFalse(BulkUninstallEntry.IsSteadyState(10f, 600000f, 10f, 600000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_IoJustBelowMaxThreshold_ReturnsTrue()
         {
@@ -264,6 +289,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(BulkUninstallEntry.IsSteadyState(10f, justBelow, 10f, justBelow));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_CpuAtExactTolerance_ReturnsTrue()
         {
@@ -271,6 +297,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(BulkUninstallEntry.IsSteadyState(10f, 5000f, 15f, 5000f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_IoAtExactTolerance_ReturnsTrue()
         {
@@ -278,6 +305,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(BulkUninstallEntry.IsSteadyState(10f, 50000f, 10f, 70480f));
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void IsSteadyState_ZeroValues_ReturnsTrue()
         {
@@ -289,6 +317,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         #region Threshold constants sanity
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void Thresholds_IoIdleLongerThanFullIdle()
         {
@@ -296,6 +325,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "I/O-idle timeout must be longer than full-idle timeout (less certain signal)");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void Thresholds_SteadyStateLongerThanIoIdle()
         {
@@ -303,6 +333,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "Steady-state timeout must be longer than I/O-idle timeout (least certain signal)");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void Thresholds_NoReadingsAtLeastAsSteadyState()
         {
@@ -314,6 +345,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
         #region StallTestResult struct
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void StallTestResult_Default_AllFalseAndZero()
         {
@@ -327,6 +359,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.AreEqual(0f, result.AggregateIo);
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void StallTestResult_Constructed_HasReadingsTrue()
         {
@@ -336,6 +369,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             Assert.IsTrue(result.HasRawReadings, "Result from actual readings should have HasRawReadings=true");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void StallTestResult_GracePeriod_HasRawReadingsButNotHasReadings()
         {
@@ -449,6 +483,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
             }
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PidSetChange_CountersContinueWhenConditionsHold()
         {
@@ -471,6 +506,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "ioIdleCounter should continue across PID change when aggregate CPU is stable");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PidSetChange_CountersResetNaturallyOnCpuJump()
         {
@@ -493,6 +529,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "steadyStateCounter should reset naturally when values jump on PID change");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PidChurn_DoesNotSuppressIdleDetection()
         {
@@ -512,6 +549,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "idleCounter should accumulate across PID changes when all sets are idle");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_NoReadingGap_BreaksSteadyStateStreak()
         {
@@ -533,6 +571,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "Steady-state streak must break on no-reading gap (gap resets prev aggregates)");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_NoReadingGap_DoesNotAccumulateSteadyState()
         {
@@ -552,6 +591,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "Alternating real/empty ticks must never build a steady-state streak");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_IoIdleResetsWhenCpuUnstable()
         {
@@ -575,6 +615,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "ioIdleCounter must reset when CPU is unstable, not carry across gaps");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PartialReadings_DoNotAdvanceCountersDuringGracePeriod()
         {
@@ -596,6 +637,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "steadyStateCounter must not advance during partial-reading grace period");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PartialReadings_AdvanceAfterGracePeriodExpires()
         {
@@ -615,6 +657,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "idleCounter must advance once grace period expires");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PartialReadings_GraceIsOneTimeWindow()
         {
@@ -646,6 +689,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "Grace must not re-arm on full reading; post-grace partial readings must advance counters");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_NoReadings_IncrementsContinuously()
         {
@@ -663,6 +707,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "noReadingsCounter should increment every tick with zero readings");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_NoReadings_ResetsOnValidReadings()
         {
@@ -680,6 +725,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "noReadingsCounter should reset to 0 when valid readings appear");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PartialReadingsGrace_DoesNotIncrementNoReadingsCounter()
         {
@@ -701,6 +747,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "noReadingsCounter must not accumulate during partial-reading grace when raw data exists");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_PidChurn_WithPartialReadings_CountersAdvanceAfterInitialGrace()
         {
@@ -728,6 +775,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 "idleCounter must advance after initial grace period despite ongoing PID churn with partial readings");
         }
 
+        [TestCategory("StallDetection")]
         [TestMethod]
         public void CounterReset_FullPartialOscillation_CountersAccumulate()
         {
