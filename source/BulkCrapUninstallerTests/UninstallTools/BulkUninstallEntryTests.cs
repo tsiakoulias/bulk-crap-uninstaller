@@ -810,6 +810,167 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 $"steadyStateCounter ({steady}) must accumulate across full/partial oscillation");
         }
 
+        [TestCategory("StallDetection")]
+        [TestMethod]
+        public void GraceCarryover_NearThresholdIoIdle_ResetsAndRestartsPostGrace()
+        {
+            // Regression test for stale-streak carryover: if ioIdleCounter is near
+            // IoIdleThreshold when grace begins, the counter must NOT carry through
+            // grace and trigger a false kill 1-2 ticks after grace ends.
+            var pids = new HashSet<int> { 100, 200 };
+            var nearThreshold = BulkUninstallEntry.IoIdleThreshold - 2;
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Build ioIdle to nearThreshold with full readings (I/O idle, CPU stable).
+            // Use (5f,0f)×2 so aggregateCpu=10, matching partial's (10f,0f) aggregateCpu=10.
+            for (int i = 0; i < nearThreshold + 1; i++) // +1 for baseline tick where prevCpu=-1
+                ticks.Add((pids, new[] { (5f, 0f), (5f, 0f) }));
+            // Enter grace (partial readings) for the full grace window
+            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 0f) }));
+            // Post-grace evaluated partial ticks — counters must restart from 0
+            var postGraceTicks = 5;
+            for (int i = 0; i < postGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 0f) }));
+
+            SimulateStallLoop(ticks, out _, out var ioIdle, out _);
+
+            // If grace froze counters, ioIdle would be nearThreshold + postGraceTicks.
+            // Correct behavior: grace resets counters, so ioIdle = postGraceTicks.
+            Assert.AreEqual(postGraceTicks, ioIdle,
+                $"ioIdleCounter must restart from 0 post-grace, not carry a near-threshold streak ({nearThreshold})");
+        }
+
+        [TestCategory("StallDetection")]
+        [TestMethod]
+        public void GraceCarryover_NearThresholdSteadyState_ResetsAndRestartsPostGrace()
+        {
+            // Same as above but for steadyStateCounter: near-threshold streak must not
+            // carry through grace and cause a premature kill.
+            var pids = new HashSet<int> { 100, 200 };
+            var nearThreshold = BulkUninstallEntry.SteadyStateThreshold - 2;
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Build steadyState to nearThreshold with full steady readings.
+            // Use (5f,2500f)×2 so aggregates match partial's (10f,5000f).
+            for (int i = 0; i < nearThreshold + 1; i++) // +1 for baseline tick
+                ticks.Add((pids, new[] { (5f, 2500f), (5f, 2500f) }));
+            // Grace window (partial readings)
+            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 5000f) }));
+            // Post-grace evaluated ticks
+            var postGraceTicks = 5;
+            for (int i = 0; i < postGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 5000f) }));
+
+            SimulateStallLoop(ticks, out _, out _, out var steady);
+
+            // Grace resets steadyStateCounter; first post-grace tick has valid prevAggregates
+            // (preserved during grace) so IsSteadyState succeeds immediately → steady = postGraceTicks.
+            Assert.AreEqual(postGraceTicks, steady,
+                $"steadyStateCounter must restart from 0 post-grace, not carry a near-threshold streak ({nearThreshold})");
+        }
+
+        [TestCategory("StallDetection")]
+        [TestMethod]
+        public void GraceCarryover_PreservesAggregates_IoIdleStartsImmediatelyPostGrace()
+        {
+            // Grace preserves prevAggregateCpu/Io so that the FIRST post-grace evaluated
+            // tick can compare against the last known baseline. Without this, the first
+            // post-grace tick would have prevCpu=-1, IsCpuStable would fail, and ioIdle
+            // would only start accumulating on the second post-grace tick.
+            var pids = new HashSet<int> { 100, 200 };
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Establish baseline with full readings. Use (5f,0f)×2 so aggregateCpu=10
+            // matches the partial reading's (10f,0f) aggregateCpu=10.
+            ticks.Add((pids, new[] { (5f, 0f), (5f, 0f) }));
+            // Grace period (partial) — prevAggregateCpu=10 preserved across grace
+            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 0f) }));
+            // Post-grace evaluated ticks (aggregateCpu=10 → stable vs preserved baseline)
+            var postGraceTicks = 3;
+            for (int i = 0; i < postGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 0f) }));
+
+            SimulateStallLoop(ticks, out _, out var ioIdle, out _);
+
+            // 1 baseline tick (prevCpu=-1 → ioIdle=0) + 0 during grace + postGraceTicks.
+            // If aggregates were NOT preserved, first post-grace tick would also fail
+            // IsCpuStable (prevCpu=-1), giving ioIdle = postGraceTicks - 1.
+            Assert.AreEqual(postGraceTicks, ioIdle,
+                "ioIdleCounter must start accumulating on the first post-grace tick (aggregates preserved during grace)");
+        }
+
+        [TestCategory("StallDetection")]
+        [TestMethod]
+        public void GraceCarryover_ZeroReadings_InvalidateAggregates_PartialGrace_DoesNot()
+        {
+            // Zero readings (no raw data) must invalidate prevAggregates (set to -1),
+            // while partial-grace readings (HasRawReadings=true) must preserve them.
+            var pids = new HashSet<int> { 100, 200 };
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Establish baseline (CPU=10, I/O=5000)
+            ticks.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+            // Zero-reading tick (no raw data → invalidates aggregates)
+            ticks.Add((pids, Array.Empty<(float, float)>()));
+            // Full reading (CPU=10 → prevCpu=-1 after zero, IsCpuStable fails)
+            ticks.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+            // Full reading (CPU=10 → stable vs tick 3 baseline → ioIdle=1)
+            ticks.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+
+            SimulateStallLoop(ticks, out _, out var ioIdleAfterZero, out _);
+
+            // Now the same sequence but with partial-grace instead of zero reading.
+            // Consume grace first so we control when grace is active.
+            var ticks2 = new List<(HashSet<int>, (float, float)[])>();
+            // Establish baseline
+            ticks2.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+            // Partial-grace tick (preserves aggregates)
+            ticks2.Add((pids, new[] { (10f, 5000f) })); // partial reading #1
+            // Full reading (CPU=10 → prevCpu preserved from baseline → IsCpuStable succeeds)
+            ticks2.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+            // Full reading (CPU=10 → stable → ioIdle continues)
+            ticks2.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+
+            SimulateStallLoop(ticks2, out _, out var ioIdleAfterGrace, out _);
+
+            // After zero reading: baseline invalidated, so tick 3 can't be stable → ioIdle=1
+            Assert.AreEqual(1, ioIdleAfterZero,
+                "Zero reading must invalidate aggregates, breaking ioIdle continuity");
+            // After grace: baseline preserved, so tick 3 IS stable → ioIdle=2
+            Assert.AreEqual(2, ioIdleAfterGrace,
+                "Partial-grace must preserve aggregates, maintaining ioIdle continuity");
+        }
+
+        [TestCategory("StallDetection")]
+        [TestMethod]
+        public void GraceCarryover_GraceFollowedByZeroReadings_NoReadingsCounterStarts()
+        {
+            // After grace ends, if the process becomes truly unreadable (zero readings),
+            // noReadingsCounter must start incrementing and prevAggregates must be invalidated.
+            var pids = new HashSet<int> { 100, 200 };
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Grace window: partial readings (HasRawReadings=true → noReadings stays 0)
+            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                ticks.Add((pids, new[] { (10f, 5000f) }));
+            // Zero-reading ticks (truly unreadable → noReadings increments)
+            var zeroTicks = 20;
+            for (int i = 0; i < zeroTicks; i++)
+                ticks.Add((pids, Array.Empty<(float, float)>()));
+            // One full reading after zero gap — verifies aggregates were invalidated
+            ticks.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
+
+            SimulateStallLoop(ticks, out _, out var ioIdle, out _, out var noReadings);
+
+            Assert.AreEqual(0, noReadings,
+                "noReadingsCounter must reset when full readings return");
+            Assert.AreEqual(0, ioIdle,
+                "ioIdleCounter must be 0 on the first tick after a zero-reading gap (prevCpu invalidated)");
+        }
+
         #endregion
 
         #region Helpers
