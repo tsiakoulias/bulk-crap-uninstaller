@@ -510,9 +510,10 @@ namespace UninstallTools.Uninstaller
 
                             // Three reading states:
                             //   Full (HasReadings):      advance/reset counters, update aggregates
-                            //   Partial raw (grace):     suppress noReadingsCounter only; freeze
-                            //                            counters and aggregates (not a valid
-                            //                            consecutive sample, not a zero-reading reset)
+                            //   Partial raw (grace):     suppress noReadingsCounter; reset counters
+                            //                            (not a valid consecutive sample) but preserve
+                            //                            aggregates so the next evaluated tick can
+                            //                            compare without starting from scratch
                             //   Zero (!HasRawReadings):  increment noReadingsCounter, reset counters,
                             //                            invalidate aggregates
                             if (stallResult.HasRawReadings)
@@ -520,40 +521,41 @@ namespace UninstallTools.Uninstaller
                             else
                                 noReadingsCounter++;
 
-                            var isGracePeriod = stallResult.HasRawReadings && !stallResult.HasReadings;
-                            if (!isGracePeriod)
+                            if (stallResult.IsIdle)
+                                idleCounter++;
+                            else
+                                idleCounter = 0;
+
+                            // I/O-idle path requires CPU stability to avoid killing legitimately
+                            // CPU-heavy uninstallers that simply perform little I/O.
+                            // Resets on ANY tick where the full condition is not met, preventing
+                            // non-consecutive stable-CPU samples from accumulating.
+                            if (stallResult.IsIoIdle && stallResult.HasReadings
+                                                     && IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
+                                ioIdleCounter++;
+                            else
+                                ioIdleCounter = 0;
+
+                            if (stallResult.HasReadings)
                             {
-                                if (stallResult.IsIdle)
-                                    idleCounter++;
+                                if (IsSteadyState(prevAggregateCpu, prevAggregateIo,
+                                        stallResult.AggregateCpu, stallResult.AggregateIo))
+                                    steadyStateCounter++;
                                 else
-                                    idleCounter = 0;
-
-                                // I/O-idle path requires CPU stability to avoid killing legitimately
-                                // CPU-heavy uninstallers that simply perform little I/O.
-                                // Resets on ANY tick where the full condition is not met, preventing
-                                // non-consecutive stable-CPU samples from accumulating.
-                                if (stallResult.IsIoIdle && stallResult.HasReadings
-                                                         && IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
-                                    ioIdleCounter++;
-                                else
-                                    ioIdleCounter = 0;
-
-                                if (stallResult.HasReadings)
-                                {
-                                    if (IsSteadyState(prevAggregateCpu, prevAggregateIo,
-                                            stallResult.AggregateCpu, stallResult.AggregateIo))
-                                        steadyStateCounter++;
-                                    else
-                                        steadyStateCounter = 0;
-
-                                    prevAggregateCpu = stallResult.AggregateCpu;
-                                    prevAggregateIo = stallResult.AggregateIo;
-                                }
-                                else
-                                {
-                                    // No readings available — break any consecutive steady-state streak
-                                    // and invalidate previous aggregates so the next reading starts fresh.
                                     steadyStateCounter = 0;
+
+                                prevAggregateCpu = stallResult.AggregateCpu;
+                                prevAggregateIo = stallResult.AggregateIo;
+                            }
+                            else
+                            {
+                                steadyStateCounter = 0;
+                                // Only invalidate aggregates on truly zero readings.
+                                // Grace-period ticks (HasRawReadings but not HasReadings) preserve
+                                // aggregates so the next evaluated reading can compare against the
+                                // last known baseline without starting from scratch.
+                                if (!stallResult.HasRawReadings)
+                                {
                                     prevAggregateCpu = -1f;
                                     prevAggregateIo = -1f;
                                 }

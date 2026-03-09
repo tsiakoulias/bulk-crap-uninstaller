@@ -451,34 +451,33 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 else
                     noReadingsCounter++;
 
-                var isGracePeriod = stallResult.HasRawReadings && !stallResult.HasReadings;
-                if (!isGracePeriod)
+                if (stallResult.IsIdle)
+                    idleCounter++;
+                else
+                    idleCounter = 0;
+
+                if (stallResult.IsIoIdle && stallResult.HasReadings
+                                         && BulkUninstallEntry.IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
+                    ioIdleCounter++;
+                else
+                    ioIdleCounter = 0;
+
+                if (stallResult.HasReadings)
                 {
-                    if (stallResult.IsIdle)
-                        idleCounter++;
+                    if (BulkUninstallEntry.IsSteadyState(prevAggregateCpu, prevAggregateIo,
+                            stallResult.AggregateCpu, stallResult.AggregateIo))
+                        steadyStateCounter++;
                     else
-                        idleCounter = 0;
-
-                    if (stallResult.IsIoIdle && stallResult.HasReadings
-                                             && BulkUninstallEntry.IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
-                        ioIdleCounter++;
-                    else
-                        ioIdleCounter = 0;
-
-                    if (stallResult.HasReadings)
-                    {
-                        if (BulkUninstallEntry.IsSteadyState(prevAggregateCpu, prevAggregateIo,
-                                stallResult.AggregateCpu, stallResult.AggregateIo))
-                            steadyStateCounter++;
-                        else
-                            steadyStateCounter = 0;
-
-                        prevAggregateCpu = stallResult.AggregateCpu;
-                        prevAggregateIo = stallResult.AggregateIo;
-                    }
-                    else
-                    {
                         steadyStateCounter = 0;
+
+                    prevAggregateCpu = stallResult.AggregateCpu;
+                    prevAggregateIo = stallResult.AggregateIo;
+                }
+                else
+                {
+                    steadyStateCounter = 0;
+                    if (!stallResult.HasRawReadings)
+                    {
                         prevAggregateCpu = -1f;
                         prevAggregateIo = -1f;
                     }
@@ -684,11 +683,11 @@ namespace BulkCrapUninstallerTests.UninstallTools
 
             SimulateStallLoop(ticks, out var idle, out _, out _);
 
-            // 9 grace ticks (frozen, idle=0) + 1 full tick (idle=1) + 1 grace tick
-            // (frozen, idle=1) + 5 evaluated partial ticks (idle=2..6) = idle 6.
+            // 9 grace ticks (idle reset to 0) + 1 full tick (idle=1) + 1 grace tick
+            // (idle reset to 0) + 5 evaluated partial ticks (idle=1..5) = idle 5.
             // If grace had re-armed on the full reading, all 6 post-full partial
-            // ticks would be grace (frozen) and idle would be only 1.
-            Assert.AreEqual(1 + postGraceTicks, idle,
+            // ticks would be grace and idle would be 0.
+            Assert.AreEqual(postGraceTicks, idle,
                 "Grace must not re-arm on full reading; post-grace partial readings must advance counters");
         }
 
