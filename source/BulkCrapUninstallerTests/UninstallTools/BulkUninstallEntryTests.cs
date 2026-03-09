@@ -963,8 +963,15 @@ namespace BulkCrapUninstallerTests.UninstallTools
             // One full reading after zero gap — verifies aggregates were invalidated
             ticks.Add((pids, new[] { (10f, 5000f), (10f, 5000f) }));
 
-            SimulateStallLoop(ticks, out _, out var ioIdle, out _, out var noReadings);
+            // First, verify intermediate buildup: noReadingsCounter must reach zeroTicks
+            // before the recovery tick resets it.
+            var ticksBeforeRecovery = ticks.GetRange(0, ticks.Count - 1);
+            SimulateStallLoop(ticksBeforeRecovery, out _, out _, out _, out var noReadingsMid);
+            Assert.AreEqual(zeroTicks, noReadingsMid,
+                "noReadingsCounter must reach zeroTicks during the zero-reading phase");
 
+            // Then, verify recovery resets everything.
+            SimulateStallLoop(ticks, out _, out var ioIdle, out _, out var noReadings);
             Assert.AreEqual(0, noReadings,
                 "noReadingsCounter must reset when full readings return");
             Assert.AreEqual(0, ioIdle,
