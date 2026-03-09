@@ -387,7 +387,7 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 }
 
                 // Mirror the partial-reading grace period in TestUninstallerForStalls:
-                // tolerate missing PIDs briefly, then use available readings.
+                // one-time grace window, then use available readings.
                 BulkUninstallEntry.StallTestResult stallResult;
                 if (readings.Length < pids.Count)
                 {
@@ -405,42 +405,46 @@ namespace BulkCrapUninstallerTests.UninstallTools
                 }
                 else
                 {
-                    partialReadingTicks = 0;
                     stallResult = BulkUninstallEntry.EvaluateCounterReadings(readings);
                 }
 
+                // Three reading states: full, partial-raw (grace), and zero.
                 if (stallResult.HasRawReadings)
                     noReadingsCounter = 0;
                 else
                     noReadingsCounter++;
 
-                if (stallResult.IsIdle)
-                    idleCounter++;
-                else
-                    idleCounter = 0;
-
-                if (stallResult.IsIoIdle && stallResult.HasReadings
-                                         && BulkUninstallEntry.IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
-                    ioIdleCounter++;
-                else
-                    ioIdleCounter = 0;
-
-                if (stallResult.HasReadings)
+                var isGracePeriod = stallResult.HasRawReadings && !stallResult.HasReadings;
+                if (!isGracePeriod)
                 {
-                    if (BulkUninstallEntry.IsSteadyState(prevAggregateCpu, prevAggregateIo,
-                            stallResult.AggregateCpu, stallResult.AggregateIo))
-                        steadyStateCounter++;
+                    if (stallResult.IsIdle)
+                        idleCounter++;
                     else
-                        steadyStateCounter = 0;
+                        idleCounter = 0;
 
-                    prevAggregateCpu = stallResult.AggregateCpu;
-                    prevAggregateIo = stallResult.AggregateIo;
-                }
-                else
-                {
-                    steadyStateCounter = 0;
-                    prevAggregateCpu = -1f;
-                    prevAggregateIo = -1f;
+                    if (stallResult.IsIoIdle && stallResult.HasReadings
+                                             && BulkUninstallEntry.IsCpuStable(prevAggregateCpu, stallResult.AggregateCpu))
+                        ioIdleCounter++;
+                    else
+                        ioIdleCounter = 0;
+
+                    if (stallResult.HasReadings)
+                    {
+                        if (BulkUninstallEntry.IsSteadyState(prevAggregateCpu, prevAggregateIo,
+                                stallResult.AggregateCpu, stallResult.AggregateIo))
+                            steadyStateCounter++;
+                        else
+                            steadyStateCounter = 0;
+
+                        prevAggregateCpu = stallResult.AggregateCpu;
+                        prevAggregateIo = stallResult.AggregateIo;
+                    }
+                    else
+                    {
+                        steadyStateCounter = 0;
+                        prevAggregateCpu = -1f;
+                        prevAggregateIo = -1f;
+                    }
                 }
             }
         }
@@ -612,28 +616,34 @@ namespace BulkCrapUninstallerTests.UninstallTools
         }
 
         [TestMethod]
-        public void CounterReset_PartialReadings_GraceResetsOnFullReading()
+        public void CounterReset_PartialReadings_GraceIsOneTimeWindow()
         {
-            // Partial readings build up grace counter, then a full reading resets it,
-            // then partial readings start a fresh grace period.
+            // Grace period is a one-time startup window that does NOT re-arm
+            // when full readings appear. Once the total partial-reading tick budget
+            // is consumed, all subsequent partial readings are evaluated normally.
             var pids = new HashSet<int> { 100, 200 };
 
             var ticks = new List<(HashSet<int>, (float, float)[])>();
-            // Nearly exhaust grace period
+            // Nearly exhaust grace period (9 of 10 partial ticks)
             for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks - 1; i++)
                 ticks.Add((pids, new[] { (0.5f, 100f) }));
-            // One full reading resets grace counter
+            // Full reading — does NOT reset grace counter
             ticks.Add((pids, new[] { (0.5f, 100f), (0.5f, 100f) }));
-            // Partial again — should start fresh grace period, not advance counters
-            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks - 1; i++)
+            // One more partial tick consumes the last grace tick (#10)
+            ticks.Add((pids, new[] { (0.5f, 100f) }));
+            // Further partial ticks are post-grace → evaluated normally
+            var postGraceTicks = 5;
+            for (int i = 0; i < postGraceTicks; i++)
                 ticks.Add((pids, new[] { (0.5f, 100f) }));
 
             SimulateStallLoop(ticks, out var idle, out _, out _);
 
-            // The full-reading tick IS idle (0.5% CPU, 100B I/O) so idleCounter → 1.
-            // But the subsequent grace ticks return IsIdle=false, resetting it to 0.
-            Assert.AreEqual(0, idle,
-                "Grace period must reset on full reading; subsequent partial ticks should not advance counters");
+            // 9 grace ticks (frozen, idle=0) + 1 full tick (idle=1) + 1 grace tick
+            // (frozen, idle=1) + 5 evaluated partial ticks (idle=2..6) = idle 6.
+            // If grace had re-armed on the full reading, all 6 post-full partial
+            // ticks would be grace (frozen) and idle would be only 1.
+            Assert.AreEqual(1 + postGraceTicks, idle,
+                "Grace must not re-arm on full reading; post-grace partial readings must advance counters");
         }
 
         [TestMethod]
@@ -712,9 +722,42 @@ namespace BulkCrapUninstallerTests.UninstallTools
             SimulateStallLoop(ticks, out var idle, out _, out _);
 
             // First 10 ticks: grace active → IsIdle=false on grace result → idleCounter=0.
+            // First 10 ticks: grace active → counters frozen at 0.
             // Ticks 10–49 (40 ticks): grace expired → EvaluateCounterReadings → IsIdle=true.
             Assert.AreEqual(40, idle,
                 "idleCounter must advance after initial grace period despite ongoing PID churn with partial readings");
+        }
+
+        [TestMethod]
+        public void CounterReset_FullPartialOscillation_CountersAccumulate()
+        {
+            // Regression test: alternating full and partial readings for a stalled
+            // process must allow ioIdleCounter and steadyStateCounter to accumulate.
+            // Before the one-time grace fix, full→partial transitions re-armed grace,
+            // which reset history-dependent stall state on every cycle.
+            var pids = new HashSet<int> { 100, 200 };
+
+            var ticks = new List<(HashSet<int>, (float, float)[])>();
+            // Consume grace period (10 partial ticks)
+            for (int i = 0; i < BulkUninstallEntry.PartialReadingGraceTicks; i++)
+                ticks.Add((pids, new[] { (0.5f, 100f) }));
+            // Alternate 5 full + 5 partial for 6 cycles (60 ticks post-grace)
+            for (int cycle = 0; cycle < 6; cycle++)
+            {
+                for (int i = 0; i < 5; i++)
+                    ticks.Add((pids, new[] { (0.5f, 100f), (0.5f, 100f) })); // full
+                for (int i = 0; i < 5; i++)
+                    ticks.Add((pids, new[] { (0.5f, 100f) })); // partial (post-grace)
+            }
+
+            SimulateStallLoop(ticks, out _, out var ioIdle, out var steady);
+
+            // All 60 post-grace ticks produce evaluated readings (grace is one-time).
+            // The first post-grace tick has prevCpu=-1 so IsCpuStable fails → 59 qualifying ticks.
+            Assert.IsTrue(ioIdle > 50,
+                $"ioIdleCounter ({ioIdle}) must accumulate across full/partial oscillation");
+            Assert.IsTrue(steady > 50,
+                $"steadyStateCounter ({steady}) must accumulate across full/partial oscillation");
         }
 
         #endregion
