@@ -13,6 +13,8 @@ namespace BulkCrapUninstallerTests.UninstallTools
     {
         #region GetPerformanceCounterTargets
 
+        // This is the only integration test — it spawns real processes and reads
+        // Windows performance counters, so it dominates the test run (~10s total).
         [TestCategory("StallDetection")]
         [TestMethod]
         public void GetPerformanceCounterTargets_ResolvesDistinctCounterInstancesForDuplicateProcessNames()
