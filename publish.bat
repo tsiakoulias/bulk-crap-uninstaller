@@ -31,6 +31,12 @@ if exist bin\launcher (
 set platform=x64
 call :publish
 if errorlevel 1 (pause & exit /b 1)
+set primaryTarget=%target%
+
+rem Publish ARM64 too so future ARM64 releases do not need script updates.
+set platform=ARM64
+call :publish
+if errorlevel 1 (pause & exit /b 1)
 
 rem Since BCU is now on .NET8, realistically only Arm64 and x64 Windows systems are supported now, so there's no point in building x86
 rem set platform=x86
@@ -38,10 +44,11 @@ rem call :publish
 
 copy bin\launcher\BCU-launcher.exe "%publish%\BCUninstaller.exe"
 if errorlevel 1 (echo Failed to copy BCU-launcher.exe & pause & exit /b 1)
-copy "%target%\BCU_manual.html" "%publish%\BCU_manual.html"
-copy "%target%\Licence.txt" "%publish%\Licence.txt"
-copy "%target%\PrivacyPolicy.txt" "%publish%\PrivacyPolicy.txt"
-copy "%target%\NOTICE" "%publish%\NOTICE"
+rem Keep the root publish layout sourced from the primary x64 package.
+copy "%primaryTarget%\BCU_manual.html" "%publish%\BCU_manual.html"
+copy "%primaryTarget%\Licence.txt" "%publish%\Licence.txt"
+copy "%primaryTarget%\PrivacyPolicy.txt" "%publish%\PrivacyPolicy.txt"
+copy "%primaryTarget%\NOTICE" "%publish%\NOTICE"
 
 if exist bin\launcher rmdir /q /s bin\launcher
 
@@ -77,6 +84,7 @@ rem -------------------------------------------------------------
 
 :publish
 set identifier=win-%platform%
+if /i "%platform%"=="ARM64" set identifier=win-arm64
 set target=%CD%\bin\publish\%identifier%
 set selfContained=True
 set runtime=/p:RuntimeIdentifier=%identifier%
